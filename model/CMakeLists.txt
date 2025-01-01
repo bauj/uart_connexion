@@ -5,10 +5,11 @@ add_library(modelLib
 
 # Include header files from the include directory
 target_include_directories(modelLib PUBLIC
-  inc
+  ${CMAKE_CURRENT_SOURCE_DIR}/inc
 )
 
 add_executable(testModel test/testModel.cpp)
+
 target_link_libraries(testModel modelLib)
 
 set_target_properties(testModel PROPERTIES

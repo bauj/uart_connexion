@@ -7,26 +7,13 @@
 #include <chrono>   // For std::chrono::milliseconds
 #include <cstring>  // for strerror
 #include <iostream>
+#include <sstream>  // For std::this_thread::sleep_for
 #include <stdexcept>
 #include <thread>  // For std::this_thread::sleep_for
-#include <sstream>  // For std::this_thread::sleep_for
 
-UARTSender::UARTSender(std::string const& ttyDevice, int baudRate) {
-  this->fd = open(ttyDevice.c_str(), O_RDWR | O_NOCTTY);
-  if (this->fd == -1) {
-    throw std::runtime_error("Failed to open TTY device: " + ttyDevice);
-  }
-
-  try {
-    // Configure the TTY device (set baud rate, etc.)
-    configureTTY(this->fd, baudRate);
-
-  } catch (const std::exception& e) {
-    // Ensure proper resource cleanup if something goes wrong
-    close(this->fd);
-    throw std::runtime_error("Error while sending message to TTY device: " +
-                             std::string(e.what()));
-  }
+UARTSender::UARTSender(std::string const& ttyDevice, int baudRate)
+    : ttyDevice_{ttyDevice}, baudRate_{baudRate} {
+  initializeUART();
   waitForArduinoReadiness();
 }
 
@@ -36,33 +23,61 @@ UARTSender::~UARTSender() {
   }
 }
 
+void UARTSender::initializeUART() {
+  if (ttyDevice_.find("ACM") == std::string::npos &&
+      ttyDevice_.find("USB") == std::string::npos &&
+      // ttyDevice_.find("ttyS") == std::string::npos &&
+      ttyDevice_.find("AMA") == std::string::npos) {
+    throw std::runtime_error(
+        "No TTY devices containing USB nor ACM nor ttyS nor AMA found.");
+  }
+
+  this->fd = open(ttyDevice_.c_str(), O_RDWR | O_NOCTTY);
+  if (this->fd == -1) {
+    throw std::runtime_error("Failed to open TTY device: " + ttyDevice_);
+  }
+
+  try {
+    // Configure the TTY device (set baud rate, etc.)
+    configureTTY(this->fd, baudRate_);
+
+  } catch (const std::exception& e) {
+    // Ensure proper resource cleanup if something goes wrong
+    close(this->fd);
+    throw std::runtime_error("Error while sending message to TTY device: " +
+                             std::string(e.what()));
+  }
+}
+
 void UARTSender::waitForArduinoReadiness() {
   char buffer[1024];
   ssize_t bytesRead;
   std::stringstream messageBuffer;  // String stream to accumulate data
-      auto startTime = std::chrono::steady_clock::now();
-    const std::chrono::seconds timeoutDuration(5);  // Timeout duration of 5 seconds
+  auto startTime = std::chrono::steady_clock::now();
+  const std::chrono::seconds timeoutDuration(
+      5);  // Timeout duration of 5 seconds
 
   std::cout << " > Waiting for the serial readiness ..." << std::endl;
 
-    // Continuously read data from the serial port until we get the "READY" message
-    while ((bytesRead = read(fd, buffer, sizeof(buffer) - 1)) > 0) {
-        buffer[bytesRead] = '\0';  // Null-terminate the buffer
-        messageBuffer << buffer;  // Append the read data to the messageBuffer
+  // Continuously read data from the serial port until we get the "READY"
+  // message
+  while ((bytesRead = read(fd, buffer, sizeof(buffer) - 1)) > 0) {
+    buffer[bytesRead] = '\0';  // Null-terminate the buffer
+    messageBuffer << buffer;   // Append the read data to the messageBuffer
 
-        // Check if the accumulated message contains "READY"
-        std::string message = messageBuffer.str();
-        if (message.find("READY") != std::string::npos) {
-            std::cout << "Arduino is ready for communication.\n";
-            return;  // "READY" found, exit the function
-        }
-
-        // Check if the timeout has expired
-        auto elapsedTime = std::chrono::steady_clock::now() - startTime;
-        if (elapsedTime > timeoutDuration) {
-            throw std::runtime_error("Timeout waiting for Arduino READY signal.");
-        }
+    // Check if the accumulated message contains "READY"
+    std::string message = messageBuffer.str();
+    if (message.find("READY") != std::string::npos) {
+      std::cout << "Arduino is ready for communication.\n";
+      return;  // "READY" found, exit the function
     }
+
+    // Check if the timeout has expired
+    auto elapsedTime = std::chrono::steady_clock::now() - startTime;
+    if (elapsedTime > timeoutDuration) {
+      throw std::runtime_error("Timeout waiting for Arduino READY signal.");
+    }
+  }
 
   if (bytesRead <= 0) {
     throw std::runtime_error("Failed to receive READY signal from Arduino");
@@ -140,4 +155,15 @@ int UARTSender::baudRateToTermiosFlag(int baudRate) {
     default:
       throw std::invalid_argument("Unsupported baud rate");
   }
+}
+
+void UARTSender::setDevice(const std::string& device) {
+  ttyDevice_ = device;
+  // Reinitialize the UART connection with the new device if needed
+  initializeUART();
+}
+
+void UARTSender::setBaudRate(int baud) {
+  baudRate_ = baud;
+  // Update UART settings if needed based on new baud rate
 }
