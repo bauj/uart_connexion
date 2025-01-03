@@ -7,7 +7,7 @@ project(uart_connexion VERSION 1.0 LANGUAGES CXX)
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_BUILD_TYPE Debug)
+set(CMAKE_BUILD_TYPE Release)
 
 # Find Qt6 libraries
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
@@ -33,3 +33,5 @@ target_link_libraries(uart_connexion PRIVATE
   Qt6::Core
   Qt6::Widgets
 )
+
+install(TARGETS uart_connexion DESTINATION bin COMPONENT binaries)
