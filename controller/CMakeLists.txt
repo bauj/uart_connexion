@@ -1,14 +1,16 @@
 set(CMAKE_AUTOMOC ON)
 
 qt6_wrap_cpp(CONTROLLER_MOC_FILES
-  inc/UARTWorker.hpp
+  inc/UARTWorkerSender.hpp
+  inc/UARTWorkerReceiver.hpp
   inc/Controller.hpp
 )
 
 # Add Controller source files
 add_library(controller
   ${CONTROLLER_MOC_FILES}
-  src/UARTWorker.cpp
+  src/UARTWorkerSender.cpp
+  src/UARTWorkerReceiver.cpp
   src/Controller.cpp
 )
 

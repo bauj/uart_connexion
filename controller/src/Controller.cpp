@@ -3,7 +3,7 @@
 #include <QMetaObject>
 
 Controller::Controller(MainWindow *view, QObject *parent)
-    : QObject(parent), view(view), uartWorker(nullptr) {
+    : QObject(parent), view(view) {
   // Connect the send button clicked signal to the controller's slot
 
   // Connect GUI signals to controller slots
@@ -12,19 +12,12 @@ Controller::Controller(MainWindow *view, QObject *parent)
 
   connect(view->getCentralPanelWidget()->getConnectButton(),
           &QPushButton::clicked, this, &Controller::onTTYConnexionMade);
+
+  connect(view, &MainWindow::windowClosing, this,
+          &Controller::onMainWindowClosing);
 }
 
-Controller::~Controller() {
-  // Make sure the thread finishes and is cleaned up
-  if (uartThread.isRunning()) {
-    uartThread.quit();  // Stop the worker thread's event loop
-    uartThread.wait();  // Wait for the worker thread to finish
-  }  
-  if (uartWorker) {
-    uartWorker->deleteLater();  // Ensures that the worker is deleted when the
-                                // thread finishes
-  }
-}
+Controller::~Controller() { cleanUpThreads(); }
 
 void Controller::onTTYConnexionMade() {
   auto ttyCmbBox = view->getCentralPanelWidget()->getTTYComboBox();
@@ -32,25 +25,28 @@ void Controller::onTTYConnexionMade() {
   auto ttyDeviceName = ttyCmbBox->itemText(ttyCmbBox->currentIndex());
   auto ttyBaudRate = baudRateCmbBox->itemText(baudRateCmbBox->currentIndex());
 
-  // Create the worker and move it to the new thread
-  uartWorker = std::make_unique<UARTWorker>("/dev/" + ttyDeviceName,
-                                            ttyBaudRate.toInt());
+  // Initialize UART sender
+  uartSender = std::make_shared<UARTSender>(
+      "/dev/" + ttyDeviceName.toStdString(), ttyBaudRate.toInt());
 
-  // Move the worker to a new thread
-  uartWorker->moveToThread(&uartThread);
+  // UART Worker Sender
+  uartWorkerSender = std::make_unique<UARTWorkerSender>(uartSender);
+  senderThread = std::make_unique<QThread>();
+  uartWorkerSender->moveToThread(senderThread.get());
+  senderThread->start();
 
-  // Connect the finished signal to delete the worker and stop the thread
-  connect(uartWorker.get(), &UARTWorker::finished, uartWorker.get(),
-          &QObject::deleteLater);
-
-  // Connect finished signal of worker thread to quit the thread
-  connect(uartWorker.get(), &UARTWorker::finished, &uartThread, &QThread::quit);
-  connect(&uartThread, &QThread::finished, &uartThread, &QThread::deleteLater);
-
-  // Start the worker thread
-  uartThread.start();
+  // UART Worker Receiver
+  uartWorkerReceiver = std::make_unique<UARTWorkerReceiver>(uartSender);
+  receiverThread = std::make_unique<QThread>();
+  uartWorkerReceiver->moveToThread(receiverThread.get());
+  connect(receiverThread.get(), &QThread::started, uartWorkerReceiver.get(),
+          &UARTWorkerReceiver::listenForMessages);
+  connect(uartWorkerReceiver.get(), &UARTWorkerReceiver::messageReceived, this,
+          &Controller::onMessageReceived);
+  receiverThread->start();
 
   // Enable the rest of the frames
+  this->view->getCentralPanelWidget()->getConnectButton()->setEnabled(false);
   this->view->getCentralPanelWidget()->getCommandFrame()->setEnabled(true);
   this->view->getCentralPanelWidget()->getMonitoringFrame()->setEnabled(true);
 }
@@ -58,10 +54,36 @@ void Controller::onTTYConnexionMade() {
 void Controller::onCommandSent() {
   // Get the command entered in the text input
   QString command = view->getCentralPanelWidget()->getCommandInput()->text();
-  qInfo() << "Sending command: " << command;
-  if (uartWorker) {
-    // Send the command to the worker via the sendCommand slot
-    QMetaObject::invokeMethod(uartWorker.get(), "sendCommand",
+  qDebug() << "Sending command: " << command;
+  if (!command.isEmpty()) {
+    QMetaObject::invokeMethod(uartWorkerSender.get(), "sendCommand",
                               Qt::QueuedConnection, Q_ARG(QString, command));
+    view->getCentralPanelWidget()->getCommandInput()->clear();
   }
 }
+
+void Controller::onMessageReceived(const QString &message) {
+  // Append the received message to the monitoring text edit
+  view->getCentralPanelWidget()->getMonitoringTextEdit()->append(message);
+}
+
+void Controller::cleanUpThreads() {
+  if (uartWorkerReceiver) {
+    uartWorkerReceiver->stopListening();  // Ensure the receiver stops listening
+    qDebug() << " Stopping the listening.";
+  }
+
+  // Stop the worker threads and join them
+  if (senderThread && senderThread->isRunning()) {
+    senderThread->quit();
+    senderThread->wait();
+    qDebug() << " Stopping the sender thread.";
+  }
+  if (receiverThread && receiverThread->isRunning()) {
+    receiverThread->quit();
+    receiverThread->wait();
+    qDebug() << " Stopping the receiver thread.";
+  }
+}
+
+void Controller::onMainWindowClosing() { cleanUpThreads(); }

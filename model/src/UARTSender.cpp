@@ -1,6 +1,7 @@
 #include "UARTSender.hpp"
 
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -34,8 +35,17 @@ void UARTSender::initializeUART() {
 
   this->fd = open(ttyDevice_.c_str(), O_RDWR | O_NOCTTY);
   if (this->fd == -1) {
+    std::cerr << "Failed to open TTY device: " << ttyDevice_ << std::endl;
+    std::cerr << "Error: " << strerror(errno)
+              << std::endl;  // Output the error string
     throw std::runtime_error("Failed to open TTY device: " + ttyDevice_);
   }
+
+  std::cout << "Successfully opened TTY device: " << ttyDevice_ << std::endl;
+
+  // flush both buffers (transmit and receive)
+  usleep(1000);
+  ioctl(fd, TCFLSH, 2);
 
   try {
     // Configure the TTY device (set baud rate, etc.)
@@ -68,7 +78,7 @@ void UARTSender::waitForArduinoReadiness() {
     // Check if the accumulated message contains "READY"
     std::string message = messageBuffer.str();
     if (message.find("READY") != std::string::npos) {
-      std::cout << "Arduino is ready for communication.\n";
+      std::cout << "Device is ready for communication.\n";
       return;  // "READY" found, exit the function
     }
 
@@ -81,30 +91,6 @@ void UARTSender::waitForArduinoReadiness() {
 
   if (bytesRead <= 0) {
     throw std::runtime_error("Failed to receive READY signal from Arduino");
-  }
-}
-
-void UARTSender::send(const std::string& message) {
-  auto messageToSend = message + "\n";
-  try {
-    // Write the message to the TTY device
-    ssize_t bytesWritten =
-        write(this->fd, messageToSend.c_str(), messageToSend.size());
-
-    if (bytesWritten == -1) {
-      throw std::runtime_error("Failed to write to TTY device");
-    }
-
-    std::this_thread::sleep_for(
-        std::chrono::milliseconds(100));  // Process the data
-
-    std::cout << "Sent message: " << message << " to TTY device." << std::endl;
-
-  } catch (const std::exception& e) {
-    // Ensure proper resource cleanup if something goes wrong
-    close(this->fd);
-    throw std::runtime_error("Error while sending message to TTY device: " +
-                             std::string(e.what()));
   }
 }
 
@@ -126,8 +112,8 @@ void UARTSender::configureTTY(int tty_fd, int baudRate) {
   tty.c_iflag &= ~IGNBRK;                      // Disable break processing
   tty.c_lflag = 0;  // No signaling characters, no echo, no canonical processing
   tty.c_oflag = 0;  // No remapping, no delays
-  tty.c_cc[VMIN] = 1;   // Read at least 1 character
-  tty.c_cc[VTIME] = 1;  // Timeout in deciseconds (0.1 seconds)
+  tty.c_cc[VMIN] = 1;    // Read at least 1 character
+  tty.c_cc[VTIME] = 10;  // Timeout in deciseconds (0.5 seconds)
 
   tty.c_cflag |= (CLOCAL | CREAD);    // Ignore modem controls, enable reading
   tty.c_cflag &= ~(PARENB | PARODD);  // Disable parity
@@ -155,6 +141,43 @@ int UARTSender::baudRateToTermiosFlag(int baudRate) {
     default:
       throw std::invalid_argument("Unsupported baud rate");
   }
+}
+
+void UARTSender::send(const std::string& message) {
+  std::lock_guard<std::mutex> lock(uartSendMutex);
+  std::string messageWithNewline = message + "\n";
+  if (write(fd, messageWithNewline.c_str(), messageWithNewline.size()) == -1) {
+    throw std::runtime_error("Failed to write to UART: " +
+                             std::string(std::strerror(errno)));
+  }
+}
+
+std::string UARTSender::receive() {
+  // std::lock_guard<std::mutex> lock(uartReceiveMutex);
+  char buffer[1024];
+  struct timeval timeout;
+  timeout.tv_sec = 0;
+  timeout.tv_usec = 500000;  // 500 ms
+
+  fd_set readfds;
+  FD_ZERO(&readfds);
+  FD_SET(fd, &readfds);
+
+  int retval = select(fd + 1, &readfds, nullptr, nullptr, &timeout);
+  if (retval == -1) {
+    throw std::runtime_error("Error in select()");
+  } else if (retval == 0) {
+    // Timeout, no data available
+    return "";
+  }
+
+  ssize_t bytesRead = ::read(fd, buffer, sizeof(buffer) - 1);
+  if (bytesRead == -1) {
+    throw std::runtime_error("Failed to read from UART: " +
+                             std::string(std::strerror(errno)));
+  }
+  buffer[bytesRead] = '\0';
+  return std::string(buffer);
 }
 
 void UARTSender::setDevice(const std::string& device) {

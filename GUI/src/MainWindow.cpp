@@ -15,3 +15,8 @@ MainWindow::MainWindow(QWidget *parent)
 
   setWindowTitle("UART LED Control");
 }
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+  emit windowClosing();  // Emit signal when window is closing
+  event->accept();  // Accept the event and close the window
+}
